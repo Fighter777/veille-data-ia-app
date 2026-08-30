@@ -290,7 +290,7 @@ def get_items(limit: int | None = None) -> pd.DataFrame:
                 SELECT 1 FROM ai_analyses
                 WHERE ai_analyses.item_id = items.id
                   AND ai_analyses.response LIKE '%"statut_propose"%'
-            ) THEN 1 ELSE 0 END AS qwen_preclassified
+            ) THEN 1 ELSE 0 END AS ai_preclassified
         FROM items
         JOIN sources ON sources.id = items.source_id
         JOIN evaluations ON evaluations.item_id = items.id
@@ -345,7 +345,7 @@ def get_ai_analyses(item_id: int) -> list[dict[str, str]]:
 
 
 def get_preclassification_candidates(limit: int) -> pd.DataFrame:
-    """Éléments encore à trier, sans analyse Qwen archivée."""
+    """Éléments encore à trier, sans analyse IA archivée."""
     query = """
         SELECT
             items.id, sources.tool, items.title, items.url, items.published_at,
@@ -381,7 +381,7 @@ def get_translation_candidates(limit: int) -> pd.DataFrame:
 
 
 def get_latest_preclassifications() -> list[dict[str, Any]]:
-    """Dernière proposition Qwen par élément, sans la confondre avec une décision humaine."""
+    """Dernière proposition IA par élément, sans la confondre avec une décision humaine."""
     query = """
         SELECT analyses.item_id, analyses.model, analyses.response, analyses.created_at,
                items.title, sources.tool

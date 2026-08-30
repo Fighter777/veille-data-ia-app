@@ -13,8 +13,8 @@ Suivre les évolutions d'outils utilisés dans les projets Data/IA, conserver un
 - Collecte de flux RSS et Atom configurables depuis l'interface.
 - Archivage des sources, articles, décisions et journaux d'actualisation dans SQLite.
 - Affichage sécurisé ou brut du HTML fourni par les flux.
-- Pré-classification par Qwen local : statut, priorité, projets potentiellement concernés et résumé factuel.
-- Traduction à la demande des extraits RSS par Qwen.
+- Pré-classification par une IA locale compatible OpenAI : statut, priorité, projets potentiellement concernés et résumé factuel.
+- Traduction à la demande des extraits RSS par l'IA configurée.
 - Tri visuel par priorité et ancienneté des articles.
 - Paramètres persistants hors base de veille : pré-classification automatique, affichage HTML brut et niveaux d'alerte e-mail.
 
@@ -22,15 +22,15 @@ Suivre les évolutions d'outils utilisés dans les projets Data/IA, conserver un
 
 ```text
 Flux RSS / Atom → Streamlit → SQLite
-                       ├─ Qwen local (analyse et traduction)
+                       ├─ IA locale compatible OpenAI (analyse et traduction)
                        └─ SMTP local (alertes configurables, à finaliser)
 ```
 
-L'application Streamlit et les données sont prévues pour être hébergées sur un serveur dédié. Le modèle Qwen reste sur une machine distincte et n'est accessible qu'au travers du réseau privé.
+L'application Streamlit et les données sont prévues pour être hébergées sur un serveur dédié. Le modèle reste sur une machine distincte et n'est accessible qu'au travers du réseau privé.
 
 ## Technologies
 
-Python, Streamlit, SQLite, feedparser, OpenAI SDK compatible llama.cpp, Qwen, Pandas et Nginx.
+Python, Streamlit, SQLite, feedparser, API compatible OpenAI, Pandas et Nginx.
 
 ## Utilisation
 
@@ -42,7 +42,7 @@ Python, Streamlit, SQLite, feedparser, OpenAI SDK compatible llama.cpp, Qwen, Pa
 ## Limites et décisions de conception
 
 - Le contenu affiché dépend de ce que chaque flux RSS/Atom publie ; l'application ne récupère pas les articles complets.
-- Les propositions Qwen servent au tri initial. Elles restent traçables et peuvent être corrigées.
+- Les propositions de l'IA servent au tri initial. Elles restent traçables et peuvent être corrigées.
 - Les sources non-RSS (notes de version ou actualités éditeur) sont référencées, mais ne sont pas encore collectées automatiquement.
 - Les secrets, données locales et réglages d'hébergement sont exclus du dépôt Git.
 

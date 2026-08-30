@@ -76,18 +76,22 @@ cp .env.example .env
 nano .env
 ```
 
-Renseigner l'accès au serveur Qwen et au SMTP. Ne pas versionner ce fichier.
+Renseigner l'accès au serveur d'IA compatible OpenAI, au SMTP et un `ADMIN_PASSWORD` fort. Ne pas versionner ce fichier. Le mot de passe déverrouille les réglages IA et le circuit d'alertes administrateur dans l'interface.
 
 Exemple de variables à compléter :
 
 ```env
-QWEN_BASE_URL=http://ADRESSE_PRIVEE_QWEN:PORT/v1
-QWEN_API_KEY=cle_locale_qwen
-QWEN_MODEL=nom_du_modele
+LLM_BASE_URL=http://ADRESSE_PRIVEE_IA:PORT/v1
+LLM_API_KEY=cle_locale_ia
+LLM_MODEL=nom_du_modele
+
+ADMIN_PASSWORD=choisir-un-mot-de-passe-fort
+MAIL_NOTIFICATIONS_ENABLED=1
 
 SMTP_HOST=localhost
 SMTP_PORT=25
 SMTP_FROM="Veille Data & IA <noreply@exemple.fr>"
+# Facultatif : destinataire utilisateur par défaut. Les deux circuits sont configurables dans l'interface.
 SMTP_TO="destinataire@exemple.fr"
 SMTP_USERNAME=
 SMTP_PASSWORD=
@@ -208,7 +212,7 @@ Copy-Item .env.example .env
 notepad .env
 ```
 
-Renseigner les paramètres Qwen et SMTP, sans publier ce fichier.
+Renseigner les paramètres de l'IA et du SMTP, sans publier ce fichier.
 
 ### 5. Démarrer l'application
 

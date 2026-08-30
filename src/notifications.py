@@ -12,35 +12,30 @@ from email.message import EmailMessage
 from dotenv import load_dotenv
 
 from src.database import notification_already_sent, record_notification
-from src.settings import get_notification_recipients
-
-
 load_dotenv()
 
 
 def is_email_configured() -> bool:
-    return mail_notifications_enabled() and bool(
-        os.getenv("SMTP_HOST") and os.getenv("SMTP_FROM") and (os.getenv("SMTP_TO") or get_notification_recipients())
-    )
+    """Indique si le transport SMTP est prêt, indépendamment des destinataires."""
+    return mail_notifications_enabled() and bool(os.getenv("SMTP_HOST") and os.getenv("SMTP_FROM"))
 
 
 def mail_notifications_enabled() -> bool:
     return os.getenv("MAIL_NOTIFICATIONS_ENABLED", "0").strip().lower() in {"1", "true", "yes", "oui"}
 
 
-def send_priority_alert(item: dict[str, str], summary: str) -> bool:
+def send_priority_alert(item: dict[str, str], summary: str, *, recipients: str, channel: str) -> bool:
     """Envoie une alerte unique par article. Les erreurs restent non bloquantes."""
     item_id = int(item["id"])
-    if not is_email_configured() or notification_already_sent(item_id, "email"):
+    if not is_email_configured() or not recipients or notification_already_sent(item_id, channel):
         return False
     message = EmailMessage()
     message["Subject"] = f"[Veille {item['priority']}] {item['title']}"
     message["From"] = os.environ["SMTP_FROM"]
-    recipients = get_notification_recipients() or os.environ.get("SMTP_TO", "")
     message["To"] = recipients.replace("\n", ", ")
     message.set_content(
         f"Outil : {item['tool']}\nPriorité : {item['priority']}\nStatut : {item['status']}\n\n"
-        f"Résumé Qwen : {summary}\n\nSource : {item['url']}\n"
+        f"Résumé IA : {summary}\n\nSource : {item['url']}\n"
     )
     try:
         with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.getenv("SMTP_PORT", "25")), timeout=15) as smtp:
@@ -53,7 +48,7 @@ def send_priority_alert(item: dict[str, str], summary: str) -> bool:
     except (OSError, smtplib.SMTPException):
         return False
     archive_sent_message(message)
-    record_notification(item_id, "email")
+    record_notification(item_id, channel)
     return True
 
 

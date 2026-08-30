@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+from datetime import date
 from html import escape
 from pathlib import Path
 
@@ -31,17 +33,28 @@ from src.database import (
     sync_sources_from_csv,
     update_evaluation,
 )
-from src.qwen import analyse_item, is_configured, translate_excerpt
+from src.llm import analyse_item, is_configured, translate_excerpt
 from src.notifications import is_email_configured, mail_notifications_enabled, send_priority_alert
 from src.settings import (
+    DEFAULT_PRIORITY_CRITERIA,
     get_auto_preclassify,
+    get_admin_notification_priorities,
+    get_admin_notification_recipients,
     get_render_raw_html,
     get_notification_priorities,
+    get_priority_criteria,
+    get_ai_enabled,
     save_auto_preclassify,
+    save_admin_notification_priorities,
+    save_admin_notification_recipients,
     save_render_raw_html,
     save_notification_priorities,
+    save_priority_criteria,
+    save_ai_enabled,
     get_notification_recipients,
     save_notification_recipients,
+    get_watch_start_date,
+    save_watch_start_date,
 )
 
 
@@ -60,6 +73,20 @@ if "notification_priorities" not in st.session_state:
     st.session_state["notification_priorities"] = get_notification_priorities()
 if "notification_recipients" not in st.session_state:
     st.session_state["notification_recipients"] = get_notification_recipients()
+if "admin_notification_priorities" not in st.session_state:
+    st.session_state["admin_notification_priorities"] = get_admin_notification_priorities()
+if "admin_notification_recipients" not in st.session_state:
+    st.session_state["admin_notification_recipients"] = get_admin_notification_recipients()
+if "ai_enabled" not in st.session_state:
+    st.session_state["ai_enabled"] = get_ai_enabled()
+for _level, _criterion in get_priority_criteria().items():
+    _key = f"priority_criterion_{_level.lower()}"
+    if _key not in st.session_state:
+        st.session_state[_key] = _criterion
+if "watch_start_date" not in st.session_state:
+    st.session_state["watch_start_date"] = get_watch_start_date()
+if "admin_authenticated" not in st.session_state:
+    st.session_state["admin_authenticated"] = False
 
 
 def persist_auto_preclassify() -> None:
@@ -78,6 +105,42 @@ def persist_notification_recipients() -> None:
     save_notification_recipients(st.session_state["notification_recipients"])
 
 
+def persist_admin_notification_priorities() -> None:
+    save_admin_notification_priorities(st.session_state["admin_notification_priorities"])
+
+
+def persist_admin_notification_recipients() -> None:
+    save_admin_notification_recipients(st.session_state["admin_notification_recipients"])
+
+
+def persist_ai_enabled() -> None:
+    save_ai_enabled(st.session_state["ai_enabled"])
+
+
+def persist_priority_criteria() -> None:
+    criteria = {}
+    for level in ("Urgente", "Haute", "Moyenne", "Basse"):
+        key = f"priority_criterion_{level.lower()}"
+        value = str(st.session_state[key]).strip()
+        # Un critère ne peut pas rester implicite : la valeur utilisée est
+        # immédiatement remise dans le champ pour rester visible.
+        if not value:
+            value = DEFAULT_PRIORITY_CRITERIA[level]
+            st.session_state[key] = value
+        criteria[level] = value
+    save_priority_criteria(criteria)
+
+
+def reset_priority_criteria() -> None:
+    for level, criterion in DEFAULT_PRIORITY_CRITERIA.items():
+        st.session_state[f"priority_criterion_{level.lower()}"] = criterion
+    save_priority_criteria(DEFAULT_PRIORITY_CRITERIA)
+
+
+def admin_is_configured() -> bool:
+    return bool(os.getenv("ADMIN_PASSWORD"))
+
+
 def synchronize() -> dict[str, int]:
     # Les candidats connus avant la collecte ne sont pas retraités par
     # l'automatisation : seuls les éléments qui viennent d'arriver le sont.
@@ -85,10 +148,11 @@ def synchronize() -> dict[str, int]:
     first_collection = get_runs().empty
     run_id = create_run()
     counters = {"sources_checked": 0, "items_found": 0, "items_added": 0, "errors": 0, "preclassified": 0}
+    since = date.fromisoformat(st.session_state["watch_start_date"])
     for source in get_active_sources(automatic_only=True):
         counters["sources_checked"] += 1
         try:
-            items = fetch_feed(source)
+            items = fetch_feed(source, since=since)
             counters["items_found"] += len(items)
             counters["items_added"] += insert_items(source["id"], items)
             mark_source_checked(source["id"])
@@ -102,7 +166,12 @@ def synchronize() -> dict[str, int]:
         items_added=counters["items_added"],
         errors=counters["errors"],
     )
-    if st.session_state.get("auto_preclassify", False) and counters["items_added"] and not first_collection:
+    if (
+        st.session_state.get("ai_enabled", True)
+        and st.session_state.get("auto_preclassify", False)
+        and counters["items_added"]
+        and not first_collection
+    ):
         candidates_after = get_preclassification_candidates(1000)
         new_items = candidates_after[candidates_after["id"].isin(set(candidates_after["id"]) - candidates_before)]
         counters["preclassified"] = preclassify_items(new_items)
@@ -110,7 +179,7 @@ def synchronize() -> dict[str, int]:
 
 
 def preclassify_items(rows: pd.DataFrame, on_progress=None) -> int:
-    """Archive et applique le classement initial proposé par Qwen."""
+    """Archive et applique le classement initial proposé par l'IA."""
     completed = 0
     total = len(rows)
     for position, (_, row) in enumerate(rows.iterrows(), start=1):
@@ -130,12 +199,21 @@ def preclassify_items(rows: pd.DataFrame, on_progress=None) -> int:
                 status=result["statut_propose"],
                 priority=result["priorite_proposee"],
                 related_project=" ; ".join(result.get("projets_impactes", [])),
-                note="Pré-classification Qwen : " + result.get("resume_factuel", ""),
+                note="Pré-classification IA : " + result.get("resume_factuel", ""),
                 decision="",
             )
             alert_item = {**item, "priority": result["priorite_proposee"], "status": result["statut_propose"]}
+            summary = result.get("resume_factuel", "")
+            user_recipients = get_notification_recipients() or os.getenv("SMTP_TO", "")
             if result["priorite_proposee"] in get_notification_priorities():
-                send_priority_alert(alert_item, result.get("resume_factuel", ""))
+                send_priority_alert(alert_item, summary, recipients=user_recipients, channel="email_user")
+            if result["priorite_proposee"] in get_admin_notification_priorities():
+                send_priority_alert(
+                    alert_item,
+                    summary,
+                    recipients=get_admin_notification_recipients(),
+                    channel="email_admin",
+                )
             completed += 1
             status = "Terminé"
         except Exception:
@@ -223,7 +301,16 @@ def render_dashboard() -> None:
 
 
 st.title("🔎 Veille Data & IA")
-st.caption("Versions, notes de version et décisions humaines — avec enrichissement Qwen local facultatif.")
+st.caption("Versions, notes de version et décisions humaines — avec enrichissement par IA locale facultatif.")
+
+if not st.session_state["watch_start_date"]:
+    st.warning("Choisis une date de départ avant la première collecte.")
+    selected_start = st.date_input("Commencer la veille à partir du", value=date.today())
+    if st.button("Enregistrer la date de départ", type="primary"):
+        st.session_state["watch_start_date"] = selected_start.isoformat()
+        save_watch_start_date(selected_start.isoformat())
+        st.rerun()
+    st.stop()
 
 with st.sidebar:
     st.header("Actions")
@@ -232,7 +319,7 @@ with st.sidebar:
             result = synchronize()
         message = f"{result['items_added']} nouveauté(s) ajoutée(s) ; {result['errors']} erreur(s)."
         if result["preclassified"]:
-            message += f" {result['preclassified']} pré-classification(s) Qwen ajoutée(s)."
+            message += f" {result['preclassified']} pré-classification(s) IA ajoutée(s)."
         st.success(message)
     latest_runs = get_runs()
     if latest_runs.empty:
@@ -241,30 +328,28 @@ with st.sidebar:
         last_run = latest_runs.iloc[0]
         st.caption(f"Dernière actualisation : {format_datetime_fr(last_run['finished_at'] or last_run['started_at'])}")
     st.divider()
-    st.write("**Qwen local**")
-    st.caption("Disponible" if is_configured() else "Non configuré")
-    st.checkbox(
-        "Pré-classer automatiquement les nouveaux éléments",
-        key="auto_preclassify",
-        on_change=persist_auto_preclassify,
-        help="À chaque actualisation, Qwen enregistre une proposition pour les seuls nouveaux éléments RSS."
-    )
+    st.write("**IA locale**")
+    if not st.session_state["ai_enabled"]:
+        st.caption("Désactivé par l’administration")
+    else:
+        st.caption("Disponible" if is_configured() else "Non configuré")
     if mail_notifications_enabled():
         st.multiselect(
-            "Priorités à notifier par e-mail",
+            "Priorités des alertes utilisateur",
             PRIORITIES,
             key="notification_priorities",
+            placeholder="Sélectionner une ou plusieurs priorités",
             on_change=persist_notification_priorities,
-            help="Réglage conservé localement, utilisé par le module d'envoi e-mail lors de la pré-classification automatique.",
+            help="Ces alertes sont indépendantes de celles réservées à l’administration.",
         )
         st.text_area(
-            "Destinataires des alertes e-mail",
+            "Destinataires des alertes utilisateur",
             key="notification_recipients",
             on_change=persist_notification_recipients,
             placeholder="prenom.nom@exemple.fr\nautre@exemple.fr",
             help="Une adresse par ligne, ou plusieurs adresses séparées par des virgules.",
         )
-        st.caption("E-mail configuré" if is_email_configured() else "E-mail non configuré")
+        st.caption("Transport e-mail configuré" if is_email_configured() else "Transport e-mail non configuré")
     else:
         st.caption("Notifications e-mail désactivées par la configuration serveur.")
     st.divider()
@@ -280,9 +365,9 @@ with st.sidebar:
     st.caption("Les sources `release_notes` et `provider_news` sont répertoriées, mais ne sont pas encore récupérées automatiquement afin d'éviter un scraping fragile.")
 
 items = get_items()
-translations_qwen = get_translations()
-tab_dashboard, tab_feed, tab_preclassify, tab_items, tab_sources, tab_history = st.tabs(
-    ["Tableau de bord", "Flux RSS", "Pré-classification Qwen", "Trier les éléments", "Sources", "Historique"]
+translations_ai = get_translations()
+tab_dashboard, tab_feed, tab_preclassify, tab_items, tab_sources, tab_history, tab_admin = st.tabs(
+    ["Tableau de bord", "Flux RSS", "Pré-classification IA", "Trier les éléments", "Sources", "Historique", "Administration"]
 )
 
 with tab_dashboard:
@@ -294,7 +379,7 @@ with tab_feed:
     if items.empty:
         st.info("Actualise les flux pour afficher les dernières entrées.")
     else:
-        show_translation = st.checkbox("Afficher la traduction Qwen lorsqu'elle est disponible", value=True)
+        show_translation = st.checkbox("Afficher la traduction IA lorsqu'elle est disponible", value=True)
         feed_tools = ["Toutes les sources"] + sorted(items["tool"].dropna().unique().tolist())
         feed_tool_filter = st.selectbox("Filtrer le flux", feed_tools, key="feed_tool_filter")
         feed_items = items.copy()
@@ -310,18 +395,20 @@ with tab_feed:
                 st.markdown(content, unsafe_allow_html=True)
             else:
                 st.caption("Cette entrée ne contient pas de résumé dans le flux.")
-            translation = translations_qwen.get(int(item["id"]))
+            translation = translations_ai.get(int(item["id"]))
             if show_translation and translation:
-                st.markdown("**Traduction Qwen de l’extrait**")
+                st.markdown("**Traduction IA de l’extrait**")
                 st.write(translation)
             st.markdown(f"[Ouvrir la publication source]({item['url']})")
             st.divider()
 
 with tab_preclassify:
-    st.subheader("Pré-classification Qwen")
-    st.caption("Qwen classe automatiquement les nouveaux éléments : statut, priorité et projets concernés restent modifiables ensuite dans la vue de tri.")
-    if not is_configured():
-        st.warning("Qwen local n'est pas configuré.")
+    st.subheader("Pré-classification IA")
+    st.caption("L'IA classe les nouveaux éléments : statut, priorité et projets concernés restent modifiables ensuite dans la vue de tri.")
+    if not st.session_state["ai_enabled"]:
+        st.info("Les fonctions IA sont désactivées par l’administration.")
+    elif not is_configured():
+        st.warning("L'IA locale n'est pas configurée.")
     else:
         batch_in_progress = bool(st.session_state.get("preclassification_in_progress", False))
         batch_size = st.slider(
@@ -336,18 +423,18 @@ with tab_preclassify:
             batch_rows = st.session_state.get("preclassification_batch", [])
             batch_statuses = st.session_state.get("preclassification_statuses", {})
             status_placeholder = st.empty()
-            progress = st.progress(0, text="Pré-classification Qwen en préparation…")
+            progress = st.progress(0, text="Pré-classification IA en préparation…")
 
             def render_batch() -> None:
                 display = pd.DataFrame(batch_rows)[["id", "tool", "title"]].copy()
-                display["statut Qwen"] = display["id"].astype(str).map(batch_statuses)
-                status_placeholder.dataframe(display[["tool", "title", "statut Qwen"]], use_container_width=True, hide_index=True)
+                display["statut IA"] = display["id"].astype(str).map(batch_statuses)
+                status_placeholder.dataframe(display[["tool", "title", "statut IA"]], use_container_width=True, hide_index=True)
 
             def refresh_status(item_id: int, status: str, done: int, total: int) -> None:
                 batch_statuses[str(item_id)] = status
                 st.session_state["preclassification_statuses"] = batch_statuses
                 render_batch()
-                progress.progress(done / total, text=f"Pré-classification Qwen : {done}/{total}")
+                progress.progress(done / total, text=f"Pré-classification IA : {done}/{total}")
 
             render_batch()
             completed = preclassify_items(pd.DataFrame(batch_rows), on_progress=refresh_status)
@@ -360,10 +447,10 @@ with tab_preclassify:
             batch_statuses = st.session_state.get("preclassification_statuses", {})
             st.success(f"Pré-classification terminée : {st.session_state.get('preclassification_last_count', 0)}/{len(batch_rows)} proposition(s) enregistrée(s).")
             display = pd.DataFrame(batch_rows)[["tool", "title", "id"]].copy()
-            display["statut Qwen"] = display["id"].astype(str).map(batch_statuses)
-            st.dataframe(display[["tool", "title", "statut Qwen"]], use_container_width=True, hide_index=True)
+            display["statut IA"] = display["id"].astype(str).map(batch_statuses)
+            st.dataframe(display[["tool", "title", "statut IA"]], use_container_width=True, hide_index=True)
         if candidates.empty and not batch_in_progress:
-            st.info("Aucun élément « À trier » sans proposition Qwen.")
+            st.info("Aucun élément « À trier » sans proposition IA.")
         elif not batch_in_progress and st.button("Pré-classer les éléments non traités", type="primary"):
             batch_rows = candidates.to_dict("records")
             st.session_state["preclassification_batch"] = batch_rows
@@ -374,11 +461,11 @@ with tab_preclassify:
 
         st.divider()
         st.subheader("Compléter les traductions RSS")
-        st.caption("Coche les extraits à traduire. La traduction est indépendante du classement Qwen déjà enregistré.")
+        st.caption("Coche les extraits à traduire. La traduction est indépendante du classement IA déjà enregistré.")
         translation_size = st.slider("Nombre d'extraits à afficher", min_value=1, max_value=50, value=10, key="translation_batch_size", disabled=batch_in_progress)
         translation_candidates = get_translation_candidates(translation_size)
         if translation_candidates.empty:
-            st.success("Tous les éléments possèdent une traduction Qwen.")
+            st.success("Tous les éléments possèdent une traduction IA.")
         else:
             translation_display = translation_candidates[["id", "tool", "title", "published_at"]].copy()
             translation_display.insert(0, "Traduire", False)
@@ -401,7 +488,7 @@ with tab_preclassify:
             disabled=not selected_ids,
         ):
             completed = 0
-            with st.spinner("Traduction des extraits par Qwen…"):
+            with st.spinner("Traduction des extraits par l’IA…"):
                 for _, row in selected_translations.iterrows():
                     try:
                         item = item_from_row(row)
@@ -435,7 +522,7 @@ with tab_preclassify:
                     "Statut": result.get("statut_propose", "Non renseigné"),
                     "Outil": proposal["tool"],
                     "Élément": proposal["title"],
-                    "Résumé Qwen": result.get("resume_factuel", ""),
+                    "Résumé IA": result.get("resume_factuel", ""),
                     "À vérifier": result.get("verification_humaine", ""),
                 }
                 for proposal, result in parsed_proposals
@@ -443,7 +530,7 @@ with tab_preclassify:
         )
         st.dataframe(overview, use_container_width=True, hide_index=True)
     else:
-        st.info("Aucune pré-classification Qwen enregistrée pour le moment.")
+        st.info("Aucune pré-classification IA enregistrée pour le moment.")
 
 with tab_items:
     st.subheader("Trier et documenter les éléments")
@@ -455,27 +542,27 @@ with tab_items:
         col1, col2 = st.columns(2)
         tool_filter = col1.selectbox("Outil / modèle", tools)
         status_filter = col2.selectbox("Statut", statuses)
-        classification_filter = st.selectbox("Pré-classification", ("Toutes", "Pré-classifiées par Qwen", "À pré-classer"))
+        classification_filter = st.selectbox("Pré-classification", ("Toutes", "Pré-classifiées par l’IA", "À pré-classer"))
         filtered = items.copy()
         if tool_filter != "Tous":
             filtered = filtered[filtered["tool"] == tool_filter]
         if status_filter != "Tous":
             filtered = filtered[filtered["status"] == status_filter]
-        if classification_filter == "Pré-classifiées par Qwen":
-            filtered = filtered[filtered["qwen_preclassified"] == 1]
+        if classification_filter == "Pré-classifiées par l’IA":
+            filtered = filtered[filtered["ai_preclassified"] == 1]
         elif classification_filter == "À pré-classer":
-            filtered = filtered[filtered["qwen_preclassified"] == 0]
+            filtered = filtered[filtered["ai_preclassified"] == 0]
 
         st.caption(f"{len(filtered)} élément(s) affiché(s)")
         for _, row in filtered.iterrows():
             item = item_from_row(row)
-            if item.get("qwen_preclassified") == "1":
+            if item.get("ai_preclassified") == "1":
                 classification_label = f"{priority_marker(item['priority'])} {item['priority']}"
             else:
                 classification_label = "⚪ À pré-classer"
             label = f"{classification_label} · {relative_age_fr(item.get('published_at'))} · {item['status']} · [{item['tool']}] {item['title']}"
             with st.expander(label):
-                detail_priority = priority_badge(item["priority"]) if item.get("qwen_preclassified") == "1" else "⚪ À pré-classer"
+                detail_priority = priority_badge(item["priority"]) if item.get("ai_preclassified") == "1" else "⚪ À pré-classer"
                 st.markdown(
                     f"{detail_priority} &nbsp; "
                     f"**Publié le {format_datetime_fr(item.get('published_at'))}** — {relative_age_fr(item.get('published_at'))}",
@@ -511,14 +598,15 @@ with tab_items:
 
 with tab_sources:
     st.subheader("Sources actives")
-    with st.expander("Ajouter une source", expanded=False):
-        st.caption("Choisis RSS ou Atom GitHub pour l'inclure dans le bouton « Actualiser les flux ». Les autres types restent dans le catalogue pour consultation manuelle.")
-        with st.form("add_source"):
-            source_name = st.text_input("Nom de la source / de l'outil *", placeholder="Ex. Hugging Face")
-            source_url = st.text_input("URL *", placeholder="https://…")
-            left, right = st.columns(2)
-            source_category = left.text_input("Catégorie", value="IA générative")
-            source_type = right.selectbox(
+    if st.session_state["admin_authenticated"]:
+        with st.expander("Ajouter une source", expanded=False):
+            st.caption("Choisis RSS ou Atom GitHub pour l'inclure dans le bouton « Actualiser les flux ». Les autres types restent dans le catalogue pour consultation manuelle.")
+            with st.form("add_source"):
+                source_name = st.text_input("Nom de la source / de l'outil *", placeholder="Ex. Hugging Face")
+                source_url = st.text_input("URL *", placeholder="https://…")
+                left, right = st.columns(2)
+                source_category = left.text_input("Catégorie", value="IA générative")
+                source_type = right.selectbox(
                 "Type",
                 ("rss", "atom_github", "release_notes", "provider_news"),
                 format_func=lambda value: {
@@ -527,13 +615,13 @@ with tab_sources:
                     "release_notes": "Notes de version (consultation manuelle)",
                     "provider_news": "Actualités éditeur (consultation manuelle)",
                 }[value],
-            )
-            source_frequency = left.text_input("Fréquence de vérification", value="hebdomadaire")
-            source_projects = right.text_input("Projets concernés", placeholder="P13 ; portfolio")
-            source_active = st.checkbox("Source active", value=True)
-            if st.form_submit_button("Enregistrer la source", type="primary"):
-                try:
-                    add_source(
+                )
+                source_frequency = left.text_input("Fréquence de vérification", value="hebdomadaire")
+                source_projects = right.text_input("Projets concernés", placeholder="P13 ; portfolio")
+                source_active = st.checkbox("Source active", value=True)
+                if st.form_submit_button("Enregistrer la source", type="primary"):
+                    try:
+                        add_source(
                         tool=source_name,
                         category=source_category,
                         source_type=source_type,
@@ -541,12 +629,14 @@ with tab_sources:
                         frequency=source_frequency,
                         related_projects=source_projects,
                         active=source_active,
-                    )
-                except ValueError as error:
-                    st.error(str(error))
-                else:
-                    st.success("Source enregistrée.")
-                    st.rerun()
+                        )
+                    except ValueError as error:
+                        st.error(str(error))
+                    else:
+                        st.success("Source enregistrée.")
+                        st.rerun()
+    else:
+        st.caption("L'ajout de sources est réservé à l'administration.")
 
     sources = pd.DataFrame(get_active_sources())
     if not sources.empty:
@@ -579,3 +669,73 @@ with tab_history:
             "Nouveaux éléments", "Erreurs",
         ]
         st.dataframe(history, use_container_width=True, hide_index=True)
+
+with tab_admin:
+    st.subheader("Administration")
+    if not admin_is_configured():
+        st.warning("Définis ADMIN_PASSWORD dans le fichier .env pour activer l'administration.")
+    elif not st.session_state["admin_authenticated"]:
+        with st.form("admin_login"):
+            password = st.text_input("Mot de passe administrateur", type="password")
+            if st.form_submit_button("Déverrouiller"):
+                if password == os.environ["ADMIN_PASSWORD"]:
+                    st.session_state["admin_authenticated"] = True
+                    st.rerun()
+                else:
+                    st.error("Mot de passe incorrect.")
+    else:
+        st.success("Administration déverrouillée pour cette session.")
+        if st.button("Verrouiller l'administration"):
+            st.session_state["admin_authenticated"] = False
+            st.rerun()
+        st.divider()
+        st.subheader("Fonctions IA")
+        st.checkbox(
+            "Activer les fonctions IA",
+            key="ai_enabled",
+            on_change=persist_ai_enabled,
+            help="Contrôle la pré-classification automatique, le classement manuel et la traduction des extraits RSS.",
+        )
+        st.checkbox(
+            "Pré-classer automatiquement les nouveaux éléments",
+            key="auto_preclassify",
+            disabled=not st.session_state["ai_enabled"],
+            on_change=persist_auto_preclassify,
+            help="Lors d'une actualisation, l'IA enregistre une proposition seulement pour les nouveaux éléments RSS.",
+        )
+        if not st.session_state["ai_enabled"]:
+            st.caption("La pré-classification automatique est suspendue tant que l'IA est désactivée.")
+
+        st.subheader("Grille de priorités IA")
+        st.caption("L'IA reçoit ces quatre critères et doit choisir un seul niveau. Vider un champ rétablit immédiatement son critère par défaut.")
+        st.button("Réinitialiser la grille par défaut", on_click=reset_priority_criteria)
+        for level in ("Urgente", "Haute", "Moyenne", "Basse"):
+            st.text_area(
+                f"Critère — {level}",
+                key=f"priority_criterion_{level.lower()}",
+                on_change=persist_priority_criteria,
+                height=78,
+            )
+
+        st.divider()
+        st.subheader("Notifications administrateur")
+        st.caption("Ce circuit est séparé des alertes utilisateur configurées dans la barre latérale.")
+        if mail_notifications_enabled():
+            st.multiselect(
+                "Priorités à notifier à l’administration",
+                PRIORITIES,
+                key="admin_notification_priorities",
+                placeholder="Sélectionner une ou plusieurs priorités",
+                on_change=persist_admin_notification_priorities,
+                help="Une alerte administrateur est envoyée lorsque l'IA propose l'une de ces priorités.",
+            )
+            st.text_area(
+                "Destinataires des alertes administrateur",
+                key="admin_notification_recipients",
+                on_change=persist_admin_notification_recipients,
+                placeholder="admin@exemple.fr\nresponsable@exemple.fr",
+                help="Une adresse par ligne, ou plusieurs adresses séparées par des virgules.",
+            )
+            st.caption("Transport e-mail configuré" if is_email_configured() else "Transport e-mail non configuré")
+        else:
+            st.warning("Les notifications e-mail sont désactivées par MAIL_NOTIFICATIONS_ENABLED dans le fichier .env.")

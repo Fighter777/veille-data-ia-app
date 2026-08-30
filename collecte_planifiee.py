@@ -2,6 +2,8 @@
 
 from pathlib import Path
 import json
+import os
+from datetime import date
 
 from src.collector import fetch_feed
 from src.database import (
@@ -10,8 +12,16 @@ from src.database import (
     save_ai_analysis, sync_sources_from_csv, update_evaluation,
 )
 from src.notifications import send_priority_alert
-from src.qwen import analyse_item, is_configured
-from src.settings import get_auto_preclassify, get_notification_priorities
+from src.llm import analyse_item, is_configured
+from src.settings import (
+    get_admin_notification_priorities,
+    get_admin_notification_recipients,
+    get_auto_preclassify,
+    get_notification_priorities,
+    get_notification_recipients,
+    get_ai_enabled,
+    get_watch_start_date,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -19,6 +29,11 @@ ROOT = Path(__file__).resolve().parent
 
 def main() -> None:
     sync_sources_from_csv(ROOT / "sources_versions.csv")
+    start_value = get_watch_start_date()
+    if not start_value:
+        print("Collecte annulée : date de départ non définie dans l'interface.")
+        return
+    since = date.fromisoformat(start_value)
     before = set(get_preclassification_candidates(1000)["id"].tolist())
     first_collection = get_runs().empty
     run_id = create_run()
@@ -26,7 +41,7 @@ def main() -> None:
     for source in get_active_sources(automatic_only=True):
         counters["sources_checked"] += 1
         try:
-            entries = fetch_feed(source)
+            entries = fetch_feed(source, since=since)
             counters["items_found"] += len(entries)
             counters["items_added"] += insert_items(source["id"], entries)
             mark_source_checked(source["id"])
@@ -36,7 +51,7 @@ def main() -> None:
     complete_run(run_id, **counters)
 
     preclassified = 0
-    if get_auto_preclassify() and is_configured() and counters["items_added"] and not first_collection:
+    if get_ai_enabled() and get_auto_preclassify() and is_configured() and counters["items_added"] and not first_collection:
         pending = get_preclassification_candidates(1000)
         new_items = pending[pending["id"].isin(set(pending["id"]) - before)]
         for _, row in new_items.iterrows():
@@ -45,11 +60,20 @@ def main() -> None:
                 model, prompt, response = analyse_item(item)
                 result = json.loads(response)
                 if result.get("statut_propose") not in STATUSES or result.get("priorite_proposee") not in PRIORITIES:
-                    raise ValueError("Réponse Qwen incomplète")
+                    raise ValueError("Réponse IA incomplète")
                 save_ai_analysis(int(item["id"]), model=model, prompt=prompt, response=response)
-                update_evaluation(int(item["id"]), status=result["statut_propose"], priority=result["priorite_proposee"], related_project=" ; ".join(result.get("projets_impactes", [])), note="Pré-classification Qwen : " + result.get("resume_factuel", ""), decision="")
+                update_evaluation(int(item["id"]), status=result["statut_propose"], priority=result["priorite_proposee"], related_project=" ; ".join(result.get("projets_impactes", [])), note="Pré-classification IA : " + result.get("resume_factuel", ""), decision="")
+                alert_item = {**item, "priority": result["priorite_proposee"], "status": result["statut_propose"]}
+                summary = result.get("resume_factuel", "")
                 if result["priorite_proposee"] in get_notification_priorities():
-                    send_priority_alert({**item, "priority": result["priorite_proposee"], "status": result["statut_propose"]}, result.get("resume_factuel", ""))
+                    send_priority_alert(
+                        alert_item,
+                        summary,
+                        recipients=get_notification_recipients() or os.getenv("SMTP_TO", ""),
+                        channel="email_user",
+                    )
+                if result["priorite_proposee"] in get_admin_notification_priorities():
+                    send_priority_alert(alert_item, summary, recipients=get_admin_notification_recipients(), channel="email_admin")
                 preclassified += 1
             except Exception as error:
                 print(f"Pré-classification impossible pour {item['id']}: {error}")

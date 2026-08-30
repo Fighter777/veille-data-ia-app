@@ -21,6 +21,8 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-L'application collecte les flux Atom/RSS, archive les éléments dans `data/veille.db` et permet de les qualifier manuellement. Pour activer l'enrichissement Qwen local via VPN, copier `.env.example` en `.env`, renseigner une clé non publiée puis relancer l'application.
+L'application collecte les flux Atom/RSS, archive les éléments dans `data/veille.db` et permet de les qualifier manuellement. Pour activer l'enrichissement par une IA locale compatible OpenAI, copier `.env.example` en `.env`, renseigner une clé non publiée puis relancer l'application.
+
+Les alertes e-mail comportent deux circuits indépendants : les destinataires et priorités utilisateur sont configurables depuis l’interface ; ceux de l’administration ne sont accessibles qu’après déverrouillage de l’onglet Administration avec `ADMIN_PASSWORD`. Un même élément peut donc suivre l’un, l’autre, les deux circuits ou aucun.
 
 Les données SQLite et les secrets sont ignorés par Git.
