@@ -22,7 +22,6 @@ from src.database import (
     get_runs,
     get_translation_candidates,
     get_translations,
-    get_runs,
     initialize_database,
     insert_items,
     mark_source_checked,

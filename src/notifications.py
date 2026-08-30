@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import smtplib
 import imaplib
+import ssl
 import time
 from email.message import EmailMessage
 
@@ -68,10 +69,12 @@ def archive_sent_message(message: EmailMessage) -> bool:
     port = int(os.getenv("MAIL_ARCHIVE_IMAP_PORT", "143"))
     encryption = os.getenv("MAIL_ARCHIVE_IMAP_ENCRYPTION", "notls").lower()
     mailbox = os.getenv("MAIL_ARCHIVE_IMAP_MAILBOX", "Sent")
+    validate_cert = os.getenv("MAIL_ARCHIVE_IMAP_VALIDATE_CERT", "1").strip() not in {"0", "false", "no"}
+    ssl_context = ssl.create_default_context() if validate_cert else ssl._create_unverified_context()
     try:
-        client = imaplib.IMAP4_SSL(host, port) if encryption == "ssl" else imaplib.IMAP4(host, port)
+        client = imaplib.IMAP4_SSL(host, port, ssl_context=ssl_context) if encryption == "ssl" else imaplib.IMAP4(host, port)
         if encryption == "starttls":
-            client.starttls()
+            client.starttls(ssl_context=ssl_context)
         client.login(username, password)
         client.append(mailbox, "\\Seen", imaplib.Time2Internaldate(time.time()), message.as_bytes())
         client.logout()
