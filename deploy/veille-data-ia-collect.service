@@ -1,0 +1,10 @@
+[Unit]
+Description=Collecte planifiée Veille Data & IA
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+WorkingDirectory=/opt/veille-data-ia
+ExecStart=/opt/veille-data-ia/.venv/bin/python /opt/veille-data-ia/collecte_planifiee.py
