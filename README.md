@@ -10,6 +10,8 @@ Le périmètre initial est défini dans [outils_cibles.md](outils_cibles.md). La
 
 La stratégie de sauvegarde est décrite dans [architecture_donnees.md](architecture_donnees.md) : historique, décisions humaines et journaux d'actualisation seront conservés dans SQLite.
 
+Le déploiement local, Windows et Ubuntu est détaillé dans [installation.md](installation.md).
+
 ## Lancer l'application
 
 ```powershell
