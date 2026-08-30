@@ -19,6 +19,7 @@ from src.database import (
     get_items,
     get_latest_preclassifications,
     get_preclassification_candidates,
+    get_runs,
     get_translation_candidates,
     get_translations,
     get_runs,
@@ -82,6 +83,7 @@ def synchronize() -> dict[str, int]:
     # Les candidats connus avant la collecte ne sont pas retraités par
     # l'automatisation : seuls les éléments qui viennent d'arriver le sont.
     candidates_before = set(get_preclassification_candidates(1000)["id"].tolist())
+    first_collection = get_runs().empty
     run_id = create_run()
     counters = {"sources_checked": 0, "items_found": 0, "items_added": 0, "errors": 0, "preclassified": 0}
     for source in get_active_sources(automatic_only=True):
@@ -101,7 +103,7 @@ def synchronize() -> dict[str, int]:
         items_added=counters["items_added"],
         errors=counters["errors"],
     )
-    if st.session_state.get("auto_preclassify", False) and counters["items_added"]:
+    if st.session_state.get("auto_preclassify", False) and counters["items_added"] and not first_collection:
         candidates_after = get_preclassification_candidates(1000)
         new_items = candidates_after[candidates_after["id"].isin(set(candidates_after["id"]) - candidates_before)]
         counters["preclassified"] = preclassify_items(new_items)

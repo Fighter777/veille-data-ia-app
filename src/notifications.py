@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import smtplib
+import imaplib
+import time
 from email.message import EmailMessage
 
 from dotenv import load_dotenv
@@ -49,5 +51,30 @@ def send_priority_alert(item: dict[str, str], summary: str) -> bool:
             smtp.send_message(message)
     except (OSError, smtplib.SMTPException):
         return False
+    archive_sent_message(message)
     record_notification(item_id, "email")
     return True
+
+
+def archive_sent_message(message: EmailMessage) -> bool:
+    """Copie le message envoyé dans le dossier IMAP configuré, sans bloquer l'alerte."""
+    if os.getenv("MAIL_ARCHIVE_IMAP_ENABLED", "0").strip() not in {"1", "true", "yes"}:
+        return False
+    host = os.getenv("MAIL_ARCHIVE_IMAP_HOST")
+    username = os.getenv("MAIL_ARCHIVE_IMAP_USERNAME")
+    password = os.getenv("MAIL_ARCHIVE_IMAP_PASSWORD")
+    if not (host and username and password):
+        return False
+    port = int(os.getenv("MAIL_ARCHIVE_IMAP_PORT", "143"))
+    encryption = os.getenv("MAIL_ARCHIVE_IMAP_ENCRYPTION", "notls").lower()
+    mailbox = os.getenv("MAIL_ARCHIVE_IMAP_MAILBOX", "Sent")
+    try:
+        client = imaplib.IMAP4_SSL(host, port) if encryption == "ssl" else imaplib.IMAP4(host, port)
+        if encryption == "starttls":
+            client.starttls()
+        client.login(username, password)
+        client.append(mailbox, "\\Seen", imaplib.Time2Internaldate(time.time()), message.as_bytes())
+        client.logout()
+        return True
+    except (OSError, imaplib.IMAP4.error):
+        return False

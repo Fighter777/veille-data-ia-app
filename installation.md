@@ -31,19 +31,36 @@ sudo apt update
 sudo apt install -y python3 python3-venv python3-pip
 ```
 
-### 2. Déposer le projet
+### 2. Créer le répertoire du projet
 
 Exemple dans `/opt/veille-data-ia` :
 
 ```bash
 sudo mkdir -p /opt/veille-data-ia
-sudo chown "$USER":"$USER" /opt/veille-data-ia
 cd /opt/veille-data-ia
 ```
 
-Copier ensuite les fichiers du projet dans ce dossier.
+#### Option : compte système dédié
 
-### 3. Créer l'environnement Python
+Par défaut, le guide utilise `www-data`, déjà employé par Nginx sur Ubuntu. Pour isoler davantage l'application, créer le compte dédié avant de déposer les fichiers :
+
+```bash
+sudo useradd --system --create-home --shell /usr/sbin/nologin streamlit
+```
+
+### 3. Déposer les fichiers du projet
+
+Copier le contenu de `envoi_dedie/` dans `/opt/veille-data-ia`.
+
+Après le transfert, appliquer les droits au compte qui exécutera le service :
+
+```bash
+sudo chown -R www-data:www-data /opt/veille-data-ia
+```
+
+Si un compte `streamlit` dédié est utilisé, remplacer `www-data:www-data` par `streamlit:streamlit`.
+
+### 4. Créer l'environnement Python
 
 ```bash
 python3 -m venv .venv
@@ -52,7 +69,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 4. Créer la configuration locale
+### 5. Créer la configuration locale
 
 ```bash
 cp .env.example .env
@@ -77,7 +94,7 @@ SMTP_PASSWORD=
 SMTP_STARTTLS=false
 ```
 
-### 5. Tester l'application
+### 6. Tester l'application
 
 ```bash
 .venv/bin/python -m streamlit run app.py --server.address 127.0.0.1 --server.port 8501
@@ -91,7 +108,7 @@ curl http://127.0.0.1:8501
 
 Arrêter ensuite avec `Ctrl+C`.
 
-### 6. Créer le service systemd
+### 7. Créer le service systemd
 
 Créer `/etc/systemd/system/veille-data-ia.service` :
 
@@ -103,6 +120,7 @@ After=network.target
 [Service]
 Type=simple
 User=www-data
+Group=www-data
 WorkingDirectory=/opt/veille-data-ia
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/veille-data-ia/.venv/bin/python -m streamlit run app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true
@@ -128,7 +146,7 @@ Logs en direct :
 sudo journalctl -u veille-data-ia -f
 ```
 
-### 7. Nginx
+### 8. Nginx
 
 La configuration Nginx doit transmettre le domaine HTTPS vers `http://127.0.0.1:8501`, avec les en-têtes WebSocket `Upgrade` et `Connection`.
 
@@ -138,6 +156,20 @@ Tester puis recharger après toute modification :
 sudo nginx -t
 sudo systemctl reload nginx
 ```
+
+### 9. Activer la collecte planifiée
+
+Copier les deux fichiers du dossier `deploy/` vers systemd :
+
+```bash
+sudo cp deploy/veille-data-ia-collect.service /etc/systemd/system/
+sudo cp deploy/veille-data-ia-collect.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now veille-data-ia-collect.timer
+systemctl list-timers veille-data-ia-collect.timer
+```
+
+Le timer exécute la collecte chaque jour à 08:00 (avec un décalage aléatoire maximal de 10 minutes). La première collecte remplit seulement la base ; les suivantes peuvent pré-classifier les nouvelles entrées et envoyer des alertes si ces options sont activées.
 
 ---
 

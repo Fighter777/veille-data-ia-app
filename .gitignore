@@ -8,3 +8,4 @@ src/__pycache__/
 .venv/
 .tmp_install/
 config/
+envoi_dedie/

@@ -1,10 +1,10 @@
 [Unit]
-Description=Actualisation horaire de Veille Data & IA
+Description=Actualisation quotidienne de Veille Data & IA
 
 [Timer]
-OnCalendar=hourly
+OnCalendar=*-*-* 08:00:00
 Persistent=true
-RandomizedDelaySec=5m
+RandomizedDelaySec=10m
 
 [Install]
 WantedBy=timers.target

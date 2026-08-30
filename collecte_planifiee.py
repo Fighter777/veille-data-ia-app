@@ -6,7 +6,7 @@ import json
 from src.collector import fetch_feed
 from src.database import (
     PRIORITIES, STATUSES, complete_run, create_run, get_active_sources,
-    get_preclassification_candidates, insert_items, mark_source_checked,
+    get_preclassification_candidates, get_runs, insert_items, mark_source_checked,
     save_ai_analysis, sync_sources_from_csv, update_evaluation,
 )
 from src.notifications import send_priority_alert
@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent
 def main() -> None:
     sync_sources_from_csv(ROOT / "sources_versions.csv")
     before = set(get_preclassification_candidates(1000)["id"].tolist())
+    first_collection = get_runs().empty
     run_id = create_run()
     counters = {"sources_checked": 0, "items_found": 0, "items_added": 0, "errors": 0}
     for source in get_active_sources(automatic_only=True):
@@ -35,7 +36,7 @@ def main() -> None:
     complete_run(run_id, **counters)
 
     preclassified = 0
-    if get_auto_preclassify() and is_configured() and counters["items_added"]:
+    if get_auto_preclassify() and is_configured() and counters["items_added"] and not first_collection:
         pending = get_preclassification_candidates(1000)
         new_items = pending[pending["id"].isin(set(pending["id"]) - before)]
         for _, row in new_items.iterrows():
